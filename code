@@ -1,0 +1,578 @@
+##Read in the data
+import pandas
+import numpy
+import re
+
+data_files = [
+    "ap_2010.csv",
+    "class_size.csv",
+    "demographics.csv",
+    "graduation.csv",
+    "hs_directory.csv",
+    "sat_results.csv"
+]
+
+data = {}
+
+for f in data_files:
+    d = pandas.read_csv("schools/{0}".format(f))
+    data[f.replace(".csv", "")] = d
+
+
+
+#Read in the surveys
+all_survey = pandas.read_csv("schools/survey_all.txt", delimiter="\t", encoding='windows-1252')
+d75_survey = pandas.read_csv("schools/survey_d75.txt", delimiter="\t", encoding='windows-1252')
+survey = pandas.concat([all_survey, d75_survey], axis=0)
+
+survey["DBN"] = survey["dbn"]
+
+survey_fields = [
+    "DBN", 
+    "rr_s", 
+    "rr_t", 
+    "rr_p", 
+    "N_s", 
+    "N_t", 
+    "N_p", 
+    "saf_p_11", 
+    "com_p_11", 
+    "eng_p_11", 
+    "aca_p_11", 
+    "saf_t_11", 
+    "com_t_11", 
+    "eng_t_10", 
+    "aca_t_11", 
+    "saf_s_11", 
+    "com_s_11", 
+    "eng_s_11", 
+    "aca_s_11", 
+    "saf_tot_11", 
+    "com_tot_11", 
+    "eng_tot_11", 
+    "aca_tot_11",
+]
+survey = survey.loc[:,survey_fields]
+data["survey"] = survey
+
+
+
+
+
+# data cleaning
+# Add DBN columns
+# this way we can build a column that shares the same name as other DataFrame
+# for merging purpose
+
+data["hs_directory"]["DBN"] = data["hs_directory"]["dbn"]
+
+def pad_csd(num):
+    string_representation = str(num)
+    if len(string_representation) > 1:
+        return string_representation
+    else:
+        return "0" + string_representation
+    
+data["class_size"]["padded_csd"] = data["class_size"]["CSD"].apply(pad_csd)
+data["class_size"]["DBN"] = data["class_size"]["padded_csd"] + data["class_size"]["SCHOOL CODE"]
+
+
+
+#Convert columns to numeric
+cols = ['SAT Math Avg. Score', 'SAT Critical Reading Avg. Score', 'SAT Writing Avg. Score']
+for c in cols:
+    data["sat_results"][c] = pandas.to_numeric(data["sat_results"][c], errors="coerce")
+
+data['sat_results']['sat_score'] = data['sat_results'][cols[0]] + data['sat_results'][cols[1]] + data['sat_results'][cols[2]]
+
+def find_lat(loc):
+    coords = re.findall("\(.+, .+\)", loc)
+    lat = coords[0].split(",")[0].replace("(", "")
+    return lat
+
+def find_lon(loc):
+    coords = re.findall("\(.+, .+\)", loc)
+    lon = coords[0].split(",")[1].replace(")", "").strip()
+    return lon
+
+data["hs_directory"]["lat"] = data["hs_directory"]["Location 1"].apply(find_lat)
+data["hs_directory"]["lon"] = data["hs_directory"]["Location 1"].apply(find_lon)
+
+data["hs_directory"]["lat"] = pandas.to_numeric(data["hs_directory"]["lat"], errors="coerce")
+data["hs_directory"]["lon"] = pandas.to_numeric(data["hs_directory"]["lon"], errors="coerce")
+
+
+#Condense datasets
+class_size = data["class_size"]
+class_size = class_size[class_size["GRADE "] == "09-12"]
+class_size = class_size[class_size["PROGRAM TYPE"] == "GEN ED"]
+
+class_size = class_size.groupby("DBN").agg(numpy.mean)
+class_size.reset_index(inplace=True)
+data["class_size"] = class_size
+
+data["demographics"] = data["demographics"][data["demographics"]["schoolyear"] == 20112012]
+
+data["graduation"] = data["graduation"][data["graduation"]["Cohort"] == "2006"]
+data["graduation"] = data["graduation"][data["graduation"]["Demographic"] == "Total Cohort"]
+
+
+
+
+#Convert AP scores to numeric
+cols = ['AP Test Takers ', 'Total Exams Taken', 'Number of Exams with scores 3 4 or 5']
+
+for col in cols:
+    data["ap_2010"][col] = pandas.to_numeric(data["ap_2010"][col], errors="coerce")
+
+
+#Combine the datasets
+combined = data["sat_results"]
+
+combined = combined.merge(data["ap_2010"], on="DBN", how="left")
+combined = combined.merge(data["graduation"], on="DBN", how="left")
+
+to_merge = ["class_size", "demographics", "survey", "hs_directory"]
+
+for m in to_merge:
+    combined = combined.merge(data[m], on="DBN", how="inner")
+
+combined = combined.fillna(combined.mean())
+combined = combined.fillna(0)
+
+#Add a school district column for mapping
+def get_first_two_chars(dbn):
+    return dbn[0:2]
+
+combined["school_dist"] = combined["DBN"].apply(get_first_two_chars)
+
+# Find correlations
+correlations = combined.corr()
+correlations = correlations["sat_score"]
+print(correlations)
+
+
+
+
+
+
+
+# data analysis and visualization
+# set up matplotlib to work in jupyter
+%matplotlib inline
+
+import matplotlib
+import numpy as np
+import matplotlib.pyplot as plt
+
+# There are several fields in combined that originally came from a survey of parents, teachers, and students.
+# plot a bar plot of the correlations between these fields and sat_score.
+
+survey_fields = [
+    "DBN", 
+    "rr_s", 
+    "rr_t", 
+    "rr_p", 
+    "N_s", 
+    "N_t", 
+    "N_p", 
+    "saf_p_11", 
+    "com_p_11", 
+    "eng_p_11", 
+    "aca_p_11", 
+    "saf_t_11", 
+    "com_t_11", 
+    "eng_t_10", 
+    "aca_t_11", 
+    "saf_s_11", 
+    "com_s_11", 
+    "eng_s_11", 
+    "aca_s_11", 
+    "saf_tot_11", 
+    "com_tot_11", 
+    "eng_tot_11", 
+    "aca_tot_11",
+]
+
+fromsurvey = []
+for field in survey_fields:
+    if field in combined.columns:
+        fromsurvey.append(field)
+combined.corr()['sat_score'][survey_fields].plot.bar(figsize=(40,20))
+plt.xticks(size = 50) # to change the font size of x-axis labels
+plt.show()
+
+# investigate the safety score and sat_score
+combined.plot.scatter(x='saf_s_11', y='sat_score')
+plt.show()
+
+# low safety score definitely correlates to low SAT score
+# however, for hight safety score, some have high SAT some low SAT
+districts = combined.groupby('school_dist').agg(numpy.mean)
+districts.reset_index('school_dist', inplace = True)
+
+districts.plot.bar(x='school_dist', y='saf_s_11', figsize = (20,10))
+
+from mpl_toolkits.basemap import Basemap
+
+m = Basemap(
+    projection = 'merc',
+    llcrnrlat = 40.496044,
+    urcrnrlat = 40.915256,
+    llcrnrlon = -74.255735,
+    urcrnrlon = -73.700272,
+    resolution = 'i',
+)
+
+longitudes = districts['lon'].tolist()
+latitudes = districts['lat'].tolist()
+
+m.scatter(longitudes, latitudes, s=50, zorder = 2, latlon=True, c=districts['saf_s_11'], cmap = 'summer')
+
+m.drawmapboundary(fill_color = '#85A6D9')
+m.drawcoastlines(color = '#6D5F47', linewidth = .4)
+m.drawrivers(color = '#6D5F37', linewidth = .4)
+m.fillcontinents(color='white',lake_color='#85A6D9')
+#plt.legend(loc='right')
+plt.show()
+# according to camp = 'summer' code
+# high score = yellow ==> some part of the Bronx, Manhattan and some brookly
+# low score = green ==> Queens, some part of the Bronx
+
+
+
+
+# now plot a bar plot to show the racial percentage and its correlations with sat_score
+
+cols = ['white_per', 'asian_per', 'black_per', 'hispanic_per']
+combined.corr()['sat_score'][cols].plot.bar(figsize=(30,10))
+plt.xticks(size=20)
+plt.yticks(size=20)
+# plot a horizontal line to cross y=0
+# you can also define xmax equals to an integer but it doesn't affect
+# anything here
+plt.axhline(y=0.0, xmin=0,c="red",linewidth=2,zorder=0)
+plt.show()
+
+
+# explore the schools with low sat_score and high values for hispanic_per
+combined.plot.scatter(x='hispanic_per', y='sat_score', figsize=(20,10))
+plt.xticks(size=20)
+plt.yticks(size=20)
+
+plt.show()
+# looks like sat_score is invertely correlated to hispanic_per
+# research school with a hispanic_per > 95.0
+hispanic_per95 = combined.loc[combined['hispanic_per'] > 95.0]
+#print(hispanic_per95)
+schoolnames = hispanic_per95['SCHOOL NAME']
+print(schoolnames)
+# looks like these schools locates in the area where the low sat_score
+# such as queens, bronx and brooklyn
+# and multicultural schools (or international)
+
+# research school with a hispanic_per < 10.0
+# and sat_score higher than 1800
+hispanic_per10 = combined.loc[(combined['hispanic_per'] < 10.0) & (combined['sat_score'] > 1800)]
+schoolnames_hp10 = hispanic_per10['SCHOOL NAME']
+print(schoolnames_hp10)
+# they locate in different part of NY city..
+# more focus on academy or science
+# instead of cultural or interanational language learners
+
+
+# now investigate the corr() between genders and sat_score
+# plot the corr() between gender and sat_score
+gender = ['male_per', 'female_per']
+combined.corr()['sat_score'][gender].plot.bar()
+plt.axhline(y=0, xmin=0, c='red', linewidth=2, zorder=0)
+plt.show()
+# shows female_per positively correlated to sat_score
+# while male_per negatively correlated
+
+# high female_per and high sat_score
+combined.plot.scatter(x='female_per', y='sat_score', figsize=(20,10))
+plt.xticks(size = 20)
+plt.yticks(size=20)
+plt.show()
+
+# definitely low or high will -> low sat_score
+# somewhere in the middle, you'll see both distributions, too
+# not significant enough
+
+high_female_sat = combined.loc[(combined['female_per'] > 60.0) & (combined['sat_score'] > 1700)]
+schoolnames_hf = high_female_sat['SCHOOL NAME']
+
+print(schoolnames_hf)
+high_female_sat.plot.bar(x='SCHOOL NAME', y='sat_score')
+# mostly reside in the center of New York city
+
+
+# investigate AP exams relationship with sat_score
+# get the AP exams takers percentage against the total enrollment
+combined['ap_per'] = combined['AP Test Takers '] / combined['total_enrollment']
+combined.plot.scatter(x='ap_per', y='sat_score')
+plt.show()
+# some with high ap_per correlates with high sat_score
+# but not every high ap_per would be so
+
+
+# to see the correlations separately
+# in low or high sat_score groups
+
+lowsat = combined.loc[combined['sat_score'] < 1400]
+highsat = combined.loc[combined['sat_score'] >= 1400]
+
+#print(lowsat['AP Test Takers '])
+
+lowsat['ap_per'] = lowsat['AP Test Takers '] / lowsat['total_enrollment']
+highsat['ap_per'] = highsat['AP Test Takers '] / highsat['total_enrollment']
+
+ax = lowsat.plot.scatter(x='ap_per', y='sat_score', color='green', label='lowsat')
+highsat.plot.scatter(x='ap_per', y='sat_score', color='yellow', label='highsat', ax=ax)
+
+plt.show()
+
+
+
+# plot all racial groups in the same plot
+# to see their sat score performance
+ax = combined.plot.scatter(x='white_per', y='sat_score', color='green', label='% White')
+combined.plot.scatter(x='asian_per', y='sat_score', color='yellow', label='% Asian', ax=ax)
+combined.plot.scatter(x='hispanic_per', y='sat_score', color='blue', label='% Hispanic', ax=ax)
+combined.plot.scatter(x='black_per', y='sat_score', color='red', label='% Black', ax=ax)
+plt.xlabel('race_per')
+
+# shrink current axis by 20%
+# place the legend box outside of the plot
+# and to the right of the current axis
+box = ax.get_position()
+ax.set_position([box.x0, box.y0, box.width * 0.8, box.height])
+ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+
+plt.show()
+
+
+
+
+# plot only two racial grousp to simplify the plot for visualization
+ax = combined.plot.scatter(x='white_per', y='sat_score', color='green', label='%white')
+combined.plot.scatter(x='asian_per', y='sat_score', color='yellow', label='%asian', ax=ax)
+#combined.plot.scatter(x='hispanic_per', y='sat_score', color='blue', label='%hispanic', ax=ax)
+#combined.plot.scatter(x='black_per', y='sat_score', color='red', label='%black', ax=ax)
+plt.xlabel('race_per')
+
+# shrink current axis by 20%
+# place the legend box outside of the plot
+# and to the right of the current axis
+box = ax.get_position()
+ax.set_position([box.x0, box.y0, box.width * 0.8, box.height])
+ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+
+plt.show()
+
+
+ax = combined.plot.scatter(x='white_per', y='sat_score', color='green', label='%white')
+#combined.plot.scatter(x='asian_per', y='sat_score', color='yellow', label='%asian', ax=ax)
+#combined.plot.scatter(x='hispanic_per', y='sat_score', color='blue', label='%hispanic', ax=ax)
+combined.plot.scatter(x='black_per', y='sat_score', color='red', label='%black', ax=ax)
+plt.xlabel('race_per')
+
+# shrink current axis by 20%
+# place the legend box outside of the plot
+# and to the right of the current axis
+box = ax.get_position()
+ax.set_position([box.x0, box.y0, box.width * 0.8, box.height])
+ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+
+plt.show()
+
+# plot only hispanic and black in one plot
+ax = combined.plot.scatter(x='hispanic_per', y='sat_score', color='blue', label='%hispanic')
+#combined.plot.scatter(x='asian_per', y='sat_score', color='yellow', label='%asian', ax=ax)
+#combined.plot.scatter(x='hispanic_per', y='sat_score', color='blue', label='%hispanic', ax=ax)
+combined.plot.scatter(x='black_per', y='sat_score', color='red', label='%black', ax=ax)
+plt.xlabel('race_per')
+
+# shrink current axis by 20%
+# place the legend box outside of the plot
+# and to the right of the current axis
+box = ax.get_position()
+ax.set_position([box.x0, box.y0, box.width * 0.8, box.height])
+ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+
+plt.show()
+
+
+
+
+
+
+
+# combine this information with a dataset containing property values, 
+# we could find the least expensive neighborhoods that have good schools.
+
+
+# download real estate csv file from (NY open data website)
+# read in and clean data
+# such that the file in the end only contains 'ZIPCODE', 'LAT', 'LON', 'FULLVAL' columns.
+# export to a csv file
+import numpy
+import pandas as pd
+
+
+
+# select only the zip and fullval columns
+# to make a smaller version (compact version)
+avroll = pd.read_csv('/home/li/Desktop/avroll.csv')
+#print(avroll['STADDR'])
+#print(avroll.columns)
+#print(avroll['VALTYPE'].head())
+
+avroll_short = avroll[['ZIP', 'FULLVAL']]
+print(avroll_short.shape)
+
+avroll_short.dropna(inplace=True)
+print(avroll_short.shape)
+
+avroll_short.to_csv('avroll_short', sep='\t')
+print(avroll_short.head())
+
+def num2str(num):
+    return str(int(num))
+
+avroll_short['ZIPCODE'] = avroll_short['ZIP'].apply(num2str)
+avroll_short.drop(['ZIP'],axis = 1)
+print(avroll_short.head())
+print(type(avroll_short['ZIPCODE'][3]))
+
+
+
+ZIPandGPS = pd.read_table('/home/li/Desktop/USzipGPS', delimiter = ',')
+#print(ZIPandGPS.head())
+#print(ZIPandGPS.columns)
+
+def pad(num):
+    strZIP = str(num)
+    if len(strZIP) == 3:
+        return '00' + strZIP
+    elif len(strZIP) == 4:
+        return '0' + strZIP
+    else:
+        len(strZIP) == 5
+        return strZIP
+    
+    
+ZIPandGPS['ZIPCODE'] = ZIPandGPS['ZIP'].apply(pad)
+ZIPandGPS['LON'] = ZIPandGPS['LNG']        
+
+NYzipGPS = ZIPandGPS[['LAT','LON','ZIPCODE']]
+NYzipGPS.to_csv('NYzipGPS', sep = '\t')
+
+NYzipGPS_list = NYzipGPS['ZIPCODE'].tolist()
+
+print(NYzipGPS.head())
+print(avroll_short.head())
+
+
+# groupby avroll_dataframe by 'ZIPCODE' and get the average of the values in the same zipcode
+# then reset the index back to ZIPCODE
+print(avroll_short.shape)
+avroll_short = avroll_short.groupby(by=['ZIPCODE']).agg(numpy.mean)
+print(avroll_short.shape)
+avroll_short.reset_index('ZIPCODE', inplace=True)
+print(avroll_short.shape)
+print(avroll_short)
+
+NYzipGPS.reset_index('ZIPCODE', inplace=True)
+print(NYzipGPS.columns)
+NYzipGPS.drop(['level_0','index'], axis=1)
+
+# merging avroll with NYzipGPS
+# align to avroll index
+mergedRVnGPS = avroll_short.merge(NYzipGPS, how='left')
+print(mergedRVnGPS.head())
+print(NYzipGPS.head())
+print(avroll_short.head())
+
+print(mergedRVnGPS.columns)
+mergedRVnGPS.drop(['ZIP','level_0','index'],axis=1,inplace=True)
+mergedRVnGPS.to_csv('NYmergedRVnGPS', sep = '\t')
+
+
+
+
+
+
+# read in data that contains the real estate values and GPS values
+NYgpsRV = pd.read_csv("schools/NYmergedRVnGPS", delimiter="\t")
+NYgpsRV.drop(['Unnamed: 0'], axis=1, inplace=True)
+
+
+## gps readings we have here good to tell the buildings/roads
+## the 3rd decimal place is worth up to 110m 
+## the 2nd decimal place is worth up to 1.1km
+## which would be enough for us to decide the area of interest
+## so let's change all the lat and lon to only have up to 3rd decimal
+
+def rounddown(floatnum):
+    return round(floatnum, 2)
+NYgpsRV['LAT'] = NYgpsRV['LAT'].apply(rounddown)
+NYgpsRV['LON'] = NYgpsRV['LON'].apply(rounddown)
+
+
+NYgpsRV['VAL(k)'] = NYgpsRV['FULLVAL']/1000
+
+NYgpsRV['lat'] = NYgpsRV['LAT']
+NYgpsRV['lon'] = NYgpsRV['LON']
+NYgpsRV.dropna(inplace=True)
+
+
+# create a duplicate file of 'combined' DataFrame
+# that only contains 6 columns
+combined_short = combined[['lat', 'lon', 'DBN', 'SCHOOL NAME', 'sat_score', 'school_dist']]
+
+combined_short['lat'] = combined_short['lat'].apply(rounddown)
+combined_short['lon'] = combined_short['lon'].apply(rounddown)
+combined_short.dropna(inplace=True)
+
+NYgpsRV.drop(['FULLVAL', 'LAT', 'LON'],axis=1, inplace=True)
+
+merged = NYgpsRV.merge(combined_short, how='left')
+
+merged.to_csv('NYgpsRVandSAT.csv', sep ='\t')
+merged.sort_values(by = ['VAL(k)'], inplace=True)
+
+
+# find the cheapest area that has good school with sat > 1600
+# it is in Queens
+cheapesthsat = merged.loc[(merged['sat_score'] > 1600) & (merged['VAL(k)'] < 1000)]
+print(cheapesthsat)
+
+from mpl_toolkits.basemap import Basemap
+m = Basemap(
+    projection = 'merc',
+    llcrnrlat = 40.496044,
+    urcrnrlat = 40.915256,
+    llcrnrlon = -74.255735,
+    urcrnrlon = -73.700272,
+    resolution = 'i'
+)
+
+longitudes = cheapesthsat['lon'].tolist()
+latitudes = cheapesthsat['lat'].tolist()
+
+m.scatter(longitudes, latitudes, s=50, zorder = 2, latlon=True, c=cheapesthsat['school_dist'], cmap='summer')
+
+m.drawmapboundary(fill_color='#85A6D9')
+m.drawcoastlines(color = '#6D5F47', linewidth = .4)
+m.drawrivers(color = '#6D5F47', linewidth = .4)
+m.fillcontinents(color = 'white', lake_color = '#85A6D9')
+
+plt.show()
+
+
+
+
+
+
